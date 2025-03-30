@@ -15,6 +15,14 @@ from playhouse.db_url import connect
 
 DB = connect(os.environ.get('DATABASE_URL') or 'sqlite:///predictions.db')
 
+
+# Adicione logo após:
+try:
+    DB.execute_sql('ALTER TABLE prediction ADD COLUMN prediction INTEGER;')
+except Exception as e:
+    print(f"Column may already exist: {e}")
+
+
 class Prediction(Model):
     observation_id = CharField(unique=True)
     observation = TextField()
@@ -168,55 +176,40 @@ def predict():
 
 @app.route('/update', methods=['POST'])
 def update():
-    """
-    Endpoint to update with actual length of stay.
-    Receives observation_id and true_value, updates database, and returns the same.
-    """
     try:
         obs = request.get_json()
     except Exception:
         return jsonify({"error": "Invalid JSON"}), 400
 
-    # Validate input format
     if not obs or 'observation_id' not in obs or 'true_value' not in obs:
-        return jsonify({"error": "Invalid request: 'observation_id' and 'true_value' are required"}), 400
-
+        return jsonify({"error": "'observation_id' and 'true_value' are required"}), 400
+    if not obs['true_value']:
+        return jsonify({"error": "'true_value' can't be empty."}), 400
     try:
-        # Get the observation_id and true_value
         observation_id = obs['observation_id']
-        true_value = obs['true_value']
+        true_value = int(obs['true_value']) if isinstance(obs['true_value'], str) else obs['true_value']
         
-        # Try to convert true_value to int if it's a string
-        if isinstance(true_value, str):
-            try:
-                true_value = int(true_value)
-            except ValueError:
-                return jsonify({"error": "true_value must be a number"}), 400
-        
-        # Update the record in the database
         try:
             p = Prediction.get(Prediction.observation_id == observation_id)
             p.true_value = true_value
             p.save()
         except Prediction.DoesNotExist:
-            # If record doesn't exist, create a new one
-            p = Prediction.create(
-                observation_id=observation_id,
-                true_value=true_value,
-                prediction=None,
-                observation="{}"
-            )
+            # Não permitir criação de novos registros sem prediction
+            return jsonify({
+                "error": "Observation ID not found. Please create a prediction first.",
+                "observation_id": observation_id
+            }), 404
         
-        # Return exactly the format specified
         return jsonify({
             "observation_id": observation_id,
             "true_value": str(true_value)
         }), 200
         
+    except ValueError:
+        return jsonify({"error": "true_value must be a number"}), 400
     except Exception as e:
-        # Handle unexpected errors
         print(f"Error in update: {e}")
-        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/list-db-contents')
