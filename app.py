@@ -7,6 +7,8 @@ from peewee import (
     CharField, Model, IntegerField, FloatField,
     TextField, IntegrityError
 )
+import xgboost as xgb
+from xgboost import XGBRegressor
 from playhouse.shortcuts import model_to_dict
 from playhouse.db_url import connect
 
