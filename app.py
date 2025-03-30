@@ -10,13 +10,9 @@ from peewee import (
 from playhouse.shortcuts import model_to_dict
 from playhouse.db_url import connect
 
-
 ########################################
 # Begin database stuff
 
-# The connect function checks if there is a DATABASE_URL env var.
-# If it exists, it uses it to connect to a remote postgres db.
-# Otherwise, it connects to a local sqlite db stored in predictions.db.
 DB = connect(os.environ.get('DATABASE_URL') or 'sqlite:///predictions.db')
 
 class Prediction(Model):
@@ -49,21 +45,21 @@ with open('dtypes.pickle', 'rb') as fh:
 # End model un-pickling
 ########################################
 
-
 ########################################
 # Begin webserver stuff
 
 app = Flask(__name__)
 
+@app.before_request
+def before_request():
+    """Connect to the database before each request."""
+    DB.connect()
 
-def clean_dollar_fields(data):
-    """Clean dollar symbols and commas from monetary fields."""
-    if 'Total Charges' in data and isinstance(data['Total Charges'], str):
-        data['Total Charges'] = float(data['Total Charges'].replace('$', '').replace(',', ''))
-    if 'Total Costs' in data and isinstance(data['Total Costs'], str):
-        data['Total Costs'] = float(data['Total Costs'].replace('$', '').replace(',', ''))
-    return data
-
+@app.after_request
+def after_request(response):
+    """Close the database connection after each request."""
+    DB.close()
+    return response
 
 def attempt_predict(request):
     """
@@ -87,23 +83,14 @@ def attempt_predict(request):
         # Extract the data part (remove observation_id from input data)
         data = {k: v for k, v in request.items() if k != "observation_id"}
         
-        # Clean monetary fields if needed
-        data = clean_dollar_fields(data)
-        
         # Filter to only include columns expected by the model
         model_data = {}
         for col in columns:
             if col in data:
                 model_data[col] = data[col]
-        
-        # Check if we have all required columns
-        if len(model_data) != len(columns):
-            missing = set(columns) - set(model_data.keys())
-            if missing:
-                return {
-                    "observation_id": observation_id,
-                    "error": f"Missing required columns: {', '.join(missing)}"
-                }
+            else:
+                # Handle missing columns by setting them to None (will be imputed)
+                model_data[col] = None
         
         # Convert to DataFrame
         obs = pd.DataFrame([model_data])
@@ -112,17 +99,20 @@ def attempt_predict(request):
         for col, dtype in dtypes.items():
             if col in obs.columns:
                 try:
-                    obs[col] = obs[col].astype(dtype)
+                    if dtype == 'object':
+                        obs[col] = obs[col].astype(str)
+                    else:
+                        obs[col] = pd.to_numeric(obs[col], errors='coerce')
                 except Exception as e:
                     print(f"Warning: Could not convert {col} to {dtype}: {e}")
         
-        # Generate the prediction
-        prediction = pipeline.predict(obs)[0]
+        # Generate the prediction (round to nearest integer for length of stay)
+        prediction = int(round(pipeline.predict(obs)[0]))
         
         # Format the response exactly as specified
         response = {
             "observation_id": observation_id,
-            "prediction": str(int(prediction))  # Convert to string as per requirements
+            "prediction": str(prediction)  # Convert to string as per requirements
         }
         return response
     
@@ -159,7 +149,6 @@ def predict():
             prediction=int(result['prediction']),
             observation=json.dumps(obs_dict)
         )
-        p.save()
     except IntegrityError:
         # Handle duplicate observation_id
         DB.rollback()
@@ -217,7 +206,6 @@ def update():
                 prediction=None,
                 observation="{}"
             )
-            p.save()
         
         # Return exactly the format specified
         return jsonify({
