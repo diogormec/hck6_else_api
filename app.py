@@ -11,6 +11,8 @@ import xgboost as xgb
 from xgboost import XGBRegressor
 from playhouse.shortcuts import model_to_dict
 from playhouse.db_url import connect
+from preprocessing_module import preprocess_data  # Substituir pelo nome correto do ficheiro onde está a função
+
 
 ########################################
 # Begin database stuff
@@ -73,39 +75,30 @@ def after_request(response):
 
 def attempt_predict(request):
     """
-    Produce prediction for hospital length of stay.
-    
-    Inputs:
-        request: dictionary with patient data including observation_id
-     
-    Returns: A dictionary with the observation_id and prediction or an error
+    Produz uma previsão para a duração da estadia hospitalar.
     """
     observation_id = request.get("observation_id", None)
 
-    # Validate observation_id
     if not observation_id:
         return {
             "observation_id": None,
             "error": "Missing observation_id"
         }
-    
+
     try:
-        # Extract the data part (remove observation_id from input data)
+        # Extrair os dados e garantir que apenas as colunas esperadas são usadas
         data = {k: v for k, v in request.items() if k != "observation_id"}
         
-        # Filter to only include columns expected by the model
-        model_data = {}
-        for col in columns:
-            if col in data:
-                model_data[col] = data[col]
-            else:
-                # Handle missing columns by setting them to None (will be imputed)
-                model_data[col] = None
-        
-        # Convert to DataFrame
-        obs = pd.DataFrame([model_data])
-        
-        # Convert data types according to the model expectations
+        # Converter para DataFrame
+        obs = pd.DataFrame([data])
+
+        # Aplicar o mesmo pré-processamento dos dados de treino
+        obs = preprocess_data(obs)  # <-- Adicionamos esta linha
+
+        # Garantir que apenas as colunas esperadas pelo modelo são mantidas
+        obs = obs[columns]
+
+        # Converter tipos de dados para manter compatibilidade
         for col, dtype in dtypes.items():
             if col in obs.columns:
                 try:
@@ -115,19 +108,18 @@ def attempt_predict(request):
                         obs[col] = pd.to_numeric(obs[col], errors='coerce')
                 except Exception as e:
                     print(f"Warning: Could not convert {col} to {dtype}: {e}")
-        
-        # Generate the prediction (round to nearest integer for length of stay)
+
+        # Fazer a previsão
         prediction = int(round(pipeline.predict(obs)[0]))
-        
-        # Format the response exactly as specified
+
+        # Formatar a resposta
         response = {
             "observation_id": observation_id,
-            "prediction": str(prediction)  # Convert to string as per requirements
+            "prediction": str(prediction)
         }
         return response
-    
+
     except Exception as e:
-        # Handle errors by returning an error message
         print(f"Error during prediction: {str(e)}")
         return {
             "observation_id": observation_id,
